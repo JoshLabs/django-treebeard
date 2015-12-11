@@ -143,8 +143,8 @@ class NS_Node(Node):
             # adding the passed (unsaved) instance to the tree
             newobj = kwargs['instance']
             if newobj.pk:
-                raise NodeAlreadySaved("Attempted to add a tree node that is "\
-                    "already in the database")
+                raise NodeAlreadySaved("Attempted to add a tree node that is "
+                                       "already in the database")
         else:
             # creating the new object
             newobj = get_result_class(cls)(**kwargs)
@@ -163,31 +163,38 @@ class NS_Node(Node):
             lftop = '>='
         else:
             lftop = '>'
-        sql = 'UPDATE %(table)s '\
-              ' SET lft = CASE WHEN lft %(lftop)s %(parent_rgt)d '\
-              '                THEN lft %(incdec)+d '\
-              '                ELSE lft END, '\
-              '     rgt = CASE WHEN rgt >= %(parent_rgt)d '\
-              '                THEN rgt %(incdec)+d '\
-              '                ELSE rgt END '\
-              ' WHERE rgt >= %(parent_rgt)d AND '\
-              '       tree_id = %(tree_id)s' % {
-                  'table': connection.ops.quote_name(
-                      get_result_class(cls)._meta.db_table),
+        sql = 'BEGIN ;' \
+              ' SELECT lft, rgt FROM %(table)s WHERE rgt >= %(parent_rgt)d ' \
+              ' AND tree_id = %(tree_id)s FOR UPDATE;' \
+              ' UPDATE %(table)s ' \
+              ' SET lft = CASE WHEN lft %(lftop)s %(parent_rgt)d ' \
+              '                THEN lft %(incdec)+d ' \
+              '                ELSE lft END, ' \
+              '     rgt = CASE WHEN rgt >= %(parent_rgt)d ' \
+              '                THEN rgt %(incdec)+d ' \
+              '                ELSE rgt END ' \
+              ' WHERE rgt >= %(parent_rgt)d AND ' \
+              '       tree_id = %(tree_id)s ;' \
+              'END;' % {
+                  'table': connection.ops.quote_name(cls._meta.db_table),
                   'parent_rgt': rgt,
                   'tree_id': tree_id,
                   'lftop': lftop,
-                  'incdec': incdec}
+                  'incdec': incdec
+              }
         return sql, []
 
     @classmethod
     def _move_tree_right(cls, tree_id):
-        sql = 'UPDATE %(table)s '\
-              ' SET tree_id = tree_id+1 '\
-              ' WHERE tree_id >= %(tree_id)d' % {
-                  'table': connection.ops.quote_name(
-                      get_result_class(cls)._meta.db_table),
-                  'tree_id': tree_id}
+        sql = 'BEGIN ;' \
+              ' SELECT tree_id FROM %(table)s WHERE tree_id >= %(tree_id)d FOR UPDATE;' \
+              ' UPDATE %(table)s ' \
+              ' SET tree_id = tree_id+1 ' \
+              ' WHERE tree_id >= %(tree_id)d ;' \
+              'END;' % {
+                  'table': connection.ops.quote_name(cls._meta.db_table),
+                  'tree_id': tree_id
+              }
         return sql, []
 
     def add_child(self, **kwargs):
@@ -444,20 +451,27 @@ class NS_Node(Node):
             depthdiff += 1
 
         # move the tree to the hole
-        sql = "UPDATE %(table)s "\
-              " SET tree_id = %(target_tree)d, "\
-              "     lft = lft + %(jump)d , "\
-              "     rgt = rgt + %(jump)d , "\
-              "     depth = depth + %(depthdiff)d "\
-              " WHERE tree_id = %(from_tree)d AND "\
-              "     lft BETWEEN %(fromlft)d AND %(fromrgt)d" % {
+        sql = "BEGIN;" \
+              " SELECT tree_id, lft, rgt, depth FROM %(table)s " \
+              " WHERE tree_id = %(from_tree)d AND " \
+              "     lft BETWEEN %(fromlft)d AND %(fromrgt)d " \
+              " FOR UPDATE;" \
+              " UPDATE %(table)s " \
+              " SET tree_id = %(target_tree)d, " \
+              "     lft = lft + %(jump)d , " \
+              "     rgt = rgt + %(jump)d , " \
+              "     depth = depth + %(depthdiff)d " \
+              " WHERE tree_id = %(from_tree)d AND " \
+              "     lft BETWEEN %(fromlft)d AND %(fromrgt)d ;" \
+              "END;" % {
                   'table': connection.ops.quote_name(cls._meta.db_table),
                   'from_tree': fromobj.tree_id,
                   'target_tree': target_tree,
                   'jump': newpos - fromobj.lft,
                   'depthdiff': depthdiff,
                   'fromlft': fromobj.lft,
-                  'fromrgt': fromobj.rgt}
+                  'fromrgt': fromobj.rgt
+              }
         cursor.execute(sql, [])
 
         # close the gap
@@ -465,26 +479,30 @@ class NS_Node(Node):
                                              fromobj.rgt, fromobj.tree_id)
         cursor.execute(sql, params)
 
-
     @classmethod
     def _get_close_gap_sql(cls, drop_lft, drop_rgt, tree_id):
-        sql = 'UPDATE %(table)s '\
-              ' SET lft = CASE '\
-              '           WHEN lft > %(drop_lft)d '\
-              '           THEN lft - %(gapsize)d '\
-              '           ELSE lft END, '\
-              '     rgt = CASE '\
-              '           WHEN rgt > %(drop_lft)d '\
-              '           THEN rgt - %(gapsize)d '\
-              '           ELSE rgt END '\
-              ' WHERE (lft > %(drop_lft)d '\
-              '     OR rgt > %(drop_lft)d) AND '\
-              '     tree_id=%(tree_id)d' % {
-                  'table': connection.ops.quote_name(
-                      get_result_class(cls)._meta.db_table),
+        sql = 'BEGIN ;' \
+              ' SELECT lft, rgt FROM %(table)s WHERE ' \
+              '     (lft > %(drop_lft)d OR rgt > %(drop_lft)d) ' \
+              '     AND tree_id=%(tree_id)d ' \
+              ' FOR UPDATE;' \
+              ' UPDATE %(table)s ' \
+              ' SET lft = CASE ' \
+              '           WHEN lft > %(drop_lft)d ' \
+              '           THEN lft - %(gapsize)d ' \
+              '           ELSE lft END, ' \
+              '     rgt = CASE ' \
+              '           WHEN rgt > %(drop_lft)d ' \
+              '           THEN rgt - %(gapsize)d ' \
+              '           ELSE rgt END ' \
+              ' WHERE (lft > %(drop_lft)d OR rgt > %(drop_lft)d) ' \
+              '     AND tree_id=%(tree_id)d;' \
+              'END ' % {
+                  'table': connection.ops.quote_name(cls._meta.db_table),
                   'gapsize': drop_rgt - drop_lft + 1,
                   'drop_lft': drop_lft,
-                  'tree_id': tree_id}
+                  'tree_id': tree_id
+              }
         return sql, []
 
     @classmethod
